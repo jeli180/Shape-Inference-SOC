@@ -59,6 +59,9 @@ module tb_integratedDPU;
   logic dp_req, dp_lw, dp_ack, rd, wr, rs, cs, interrupt;
   logic [31:0] dp_addr, dp_write_data, dp_read_data;
   wire [7:0] db;
+  logic [7:0] dpu_db_out;
+  logic dpu_db_oe;
+  assign db = dpu_db_oe ? dpu_db_out : 8'hZZ;
 
   //dcache
   logic ca_req, ca_lw, ca_hit, ca_miss, ca_load_done_stall, ca_passive_stall;
@@ -316,8 +319,10 @@ module tb_integratedDPU;
     //from screen
     .interrupt(interrupt),
 
-    //inout
-    .db(db)
+    //screen data bus
+    .db_in(db),
+    .db_out(dpu_db_out),
+    .db_oe(dpu_db_oe)
   );
 
   dcache dcache0 (

@@ -15,7 +15,11 @@ module dpu (
   //from screen
   input logic interrupt, //low active
 
-  inout wire [7:0] db
+  input  logic [7:0] db_in,
+  output logic [7:0] db_out,
+  output logic db_oe,
+
+  output logic [3:0] state_debug
 );
 
   /* RA8875 DPU description
@@ -25,24 +29,25 @@ module dpu (
         read_data if transaction is a read
       - using 8080 8b parrallel to interface with screen, all signals correspond to those in
         datasheet
-      - db driven by both screen and this module, so modeled as wire
+      - db input, output, and output-enable are separated so the top-level module owns the
+        physical tri-state buffer
   */
 
-  typedef enum {
+  typedef enum logic [3:0] {
     IDLE_C,
     INIT,
     CLEAR,
     POLL_INT,
     COORD,
-    DRAW,
+    DRAW, //5
     SEND,
     WAIT_RECIEVE,
-    WAIT_INFERENCE,
+    WAIT_INFERENCE, //8
     PREP_CLEAR,
     FIX,
     DONE,
     CURSOR_RST,
-    FULL_DONE
+    FULL_DONE //13
   } state_control;
 
   state_control stateC, next_stateC;
@@ -65,6 +70,8 @@ module dpu (
 
   state_interface stateI, next_stateI;
 
+  assign state_debug = stateC;
+
   /* db is tri state
       - when i drive, i set drive high and set db_w
       - when drive is low, display is free to write to db, and i read db_r value
@@ -75,8 +82,9 @@ module dpu (
   logic drive, next_drive, next_rs, next_cs, next_rd, next_wr;
   wire [7:0] db_r;
 
-  assign db = drive ? db_w : 'z;
-  assign db_r = db;
+  assign db_out = db_w;
+  assign db_oe = drive;
+  assign db_r = db_in;
 
   //fsm control signals
   logic [18:0] ct, next_ct; //max ct number used is the total pixels (384,000)

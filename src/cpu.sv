@@ -1,4 +1,4 @@
-module cpu_wrapper (
+module cpu (
   input logic clk, rst,
 
   //to mmio
