@@ -31,13 +31,14 @@ module top (
     end
   endgenerate
 
-  //clk div to 12.5 mhz
+  // Run the temporary hardware test at 12.5 MHz for the bus-timing comparison.
   logic clk_12_5mhz;
 
   clock_divider clk_div (
     .clk_25mhz(clk_25mhz),
     .rst(rst),
-    .clk_12_5mhz(clk_12_5mhz)
+    .clk_12_5mhz(clk_12_5mhz),
+    .clk_1_25mhz()
   );
 
   //button edges
@@ -84,7 +85,8 @@ module top (
 
   //========= instantiations
 
-  dpu_test_controller test_con (
+  // dpu_test_controller test_con (
+  temp_controller test_con (
     .clk(clk_12_5mhz),
     .rst(rst),
     .btn_edge(btn_edge),
@@ -97,7 +99,8 @@ module top (
     .write_data(write_data)
   );
 
-  dpu dpu0 (
+  // dpu dpu0 (
+  temp_dpu dpu0 (
     .clk(clk_12_5mhz),
     .rst(rst),
     .req(req),
