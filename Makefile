@@ -7,6 +7,7 @@ DEVICE   ?= --85k
 PACKAGE  ?= CABGA381
 BUILD    ?= build
 SYNTH_FLAGS ?= -noabc9
+PNR_FLAGS   ?= --router router2
 
 JSON     := $(BUILD)/$(TOP).json
 CONFIG   := $(BUILD)/$(TOP).config
@@ -23,7 +24,7 @@ $(JSON): $(SRCS) | $(BUILD)
 	yosys -p 'read_verilog -sv $(SRCS); synth_ecp5 $(SYNTH_FLAGS) -top $(TOP) -json $(JSON)'
 
 $(CONFIG): $(JSON) $(LPF)
-	nextpnr-ecp5 $(DEVICE) --package $(PACKAGE) --json $(JSON) --lpf $(LPF) --textcfg $(CONFIG)
+	nextpnr-ecp5 $(DEVICE) --package $(PACKAGE) --json $(JSON) --lpf $(LPF) --textcfg $(CONFIG) $(PNR_FLAGS)
 
 $(BIT): $(CONFIG)
 	ecppack $(CONFIG) $(BIT)

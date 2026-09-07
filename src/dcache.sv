@@ -52,18 +52,21 @@ module dcache (
   localparam int TAG_BITS = 24;
 
   //64 set 2 way allocation
-  logic [31:0] data [0:NUM_SETS-1][0:NUM_WAYS-1];
-  logic [TAG_BITS-1:0] tag [0:NUM_SETS-1][0:NUM_WAYS-1];
+  // Keep each way's tag and data in one reset-free payload memory. Valid bits
+  // gate every payload read, so invalid payload contents are unobservable.
+  logic [TAG_BITS+31:0] payload_way0 [0:NUM_SETS-1];
+  logic [TAG_BITS+31:0] payload_way1 [0:NUM_SETS-1];
   logic valid [0:NUM_SETS-1][0:NUM_WAYS-1];
   logic dirty [0:NUM_SETS-1][0:NUM_WAYS-1];
 
-  logic [31:0] next_data [0:NUM_SETS-1][0:NUM_WAYS-1];
-  logic [TAG_BITS-1:0] next_tag [0:NUM_SETS-1][0:NUM_WAYS-1];
-  logic next_valid [0:NUM_SETS-1][0:NUM_WAYS-1];
-  logic next_dirty [0:NUM_SETS-1][0:NUM_WAYS-1];
-
   logic mru [0:NUM_SETS-1]; //most recently used way in a set
-  logic next_mru[0:NUM_SETS-1];
+
+  // A transaction changes at most one cache entry. Explicit write enables
+  // avoid building a full next-state mux for every bit in every entry.
+  logic cache_payload_we, cache_valid_we, cache_dirty_we, cache_mru_we;
+  logic [SET_BITS-1:0] cache_set_w;
+  logic cache_way_w, cache_valid_w, cache_dirty_w, cache_mru_w;
+  logic [TAG_BITS+31:0] cache_payload_w;
 
   //hazard
   logic full_stall, addr_dep;
@@ -83,16 +86,16 @@ module dcache (
   logic [31:0] next_load_data;
 
   always_comb begin
-    //cache values default to the same
-    for (int s = 0; s < NUM_SETS; s++) begin
-      next_mru[s] = mru[s];
-      for (int w = 0; w < NUM_WAYS; w++) begin
-        next_data[s][w] = data[s][w];
-        next_tag[s][w] = tag[s][w];
-        next_valid[s][w] = valid[s][w];
-        next_dirty[s][w] = dirty[s][w];
-      end
-    end
+    cache_payload_we = 1'b0;
+    cache_valid_we = 1'b0;
+    cache_dirty_we = 1'b0;
+    cache_mru_we = 1'b0;
+    cache_set_w = '0;
+    cache_way_w = 1'b0;
+    cache_payload_w = '0;
+    cache_valid_w = 1'b0;
+    cache_dirty_w = 1'b0;
+    cache_mru_w = 1'b0;
 
     //CPU defaults
     next_hit_ack = 0;
@@ -120,11 +123,16 @@ module dcache (
     
     if (mshr_done_pulse) begin //mshr done / send to CPU / replace cache val
       //cache replacement
-      next_data[miss_set][load_way_out] = mshr_data_out;
-      next_tag[miss_set][load_way_out] = miss_tag;
-      next_valid[miss_set][load_way_out] = 1'b1;
-      next_mru[miss_set] = load_way_out;
-      next_dirty[miss_set][load_way_out] = 1'b0;
+      cache_set_w = miss_set;
+      cache_way_w = load_way_out;
+      cache_payload_we = 1'b1;
+      cache_valid_we = 1'b1;
+      cache_dirty_we = 1'b1;
+      cache_mru_we = 1'b1;
+      cache_payload_w = {miss_tag, mshr_data_out};
+      cache_valid_w = 1'b1;
+      cache_dirty_w = 1'b0;
+      cache_mru_w = load_way_out;
       
       //inject load instructions into pipeline
       next_load_done_stall = 1'b1;
@@ -133,42 +141,62 @@ module dcache (
     end else if (send_pulse) begin //normal behavior (service CPU requests), if add more ways add more hit branches
       if (addr_in == addr1 || addr_in == addr2 || addr_in == addr3 || addr_in == addr4) begin
         next_addr_dep = 1'b1; //stall CPU
-      end else if (cur_tag == tag[cur_set][1] && valid[cur_set][1]) begin //check way1 hit
-        next_mru[cur_set] = 1'b1;
+      end else if (cur_tag == payload_way1[cur_set][TAG_BITS+31:32] && valid[cur_set][1]) begin //check way1 hit
+        cache_set_w = cur_set;
+        cache_way_w = 1'b1;
+        cache_mru_we = 1'b1;
+        cache_mru_w = 1'b1;
         next_hit_ack = 1'b1;
         if (lw) begin
-          next_load_data = data[cur_set][1];
+          next_load_data = payload_way1[cur_set][31:0];
           next_regD_out = regD_in; //may not need
         end else begin
-          next_data[cur_set][1] = store_data;
-          next_dirty[cur_set][1] = 1'b1;
+          cache_payload_we = 1'b1;
+          cache_dirty_we = 1'b1;
+          cache_payload_w = {payload_way1[cur_set][TAG_BITS+31:32], store_data};
+          cache_dirty_w = 1'b1;
         end
-      end else if (cur_tag == tag[cur_set][0] && valid[cur_set][0]) begin //check way0 hit
-        next_mru[cur_set] = 1'b0;
+      end else if (cur_tag == payload_way0[cur_set][TAG_BITS+31:32] && valid[cur_set][0]) begin //check way0 hit
+        cache_set_w = cur_set;
+        cache_way_w = 1'b0;
+        cache_mru_we = 1'b1;
+        cache_mru_w = 1'b0;
         next_hit_ack = 1'b1;
         if (lw) begin
-          next_load_data = data[cur_set][0];
+          next_load_data = payload_way0[cur_set][31:0];
           next_regD_out = regD_in; //may not need
         end else begin
-          next_data[cur_set][0] = store_data;
-          next_dirty[cur_set][0] = 1'b1;
+          cache_payload_we = 1'b1;
+          cache_dirty_we = 1'b1;
+          cache_payload_w = {payload_way0[cur_set][TAG_BITS+31:32], store_data};
+          cache_dirty_w = 1'b1;
         end
       //can only be miss now
       end else if (mshr_full) begin
         //store misses to nonvalid or clean lines don't use mshr
         if (!lw && (!dirty[cur_set][0] || !valid[cur_set][0])) begin //check way0
-          next_data[cur_set][0] = store_data;
-          next_valid[cur_set][0] = 1'b1;
-          next_dirty[cur_set][0] = 1'b1;
-          next_tag[cur_set][0] = cur_tag;
-          next_mru[cur_set] = 1'b0;
+          cache_set_w = cur_set;
+          cache_way_w = 1'b0;
+          cache_payload_we = 1'b1;
+          cache_valid_we = 1'b1;
+          cache_dirty_we = 1'b1;
+          cache_mru_we = 1'b1;
+          cache_payload_w = {cur_tag, store_data};
+          cache_valid_w = 1'b1;
+          cache_dirty_w = 1'b1;
+          cache_mru_w = 1'b0;
           next_hit_ack = 1'b1;
         end else if (!lw && (!dirty[cur_set][1] || !valid[cur_set][1])) begin //check way1
-          next_data[cur_set][1] = store_data;
-          next_valid[cur_set][1] = 1'b1;
-          next_dirty[cur_set][1] = 1'b1;
-          next_tag[cur_set][1] = cur_tag;
-          next_mru[cur_set] = 1'b1;
+          cache_set_w = cur_set;
+          cache_way_w = 1'b1;
+          cache_payload_we = 1'b1;
+          cache_valid_we = 1'b1;
+          cache_dirty_we = 1'b1;
+          cache_mru_we = 1'b1;
+          cache_payload_w = {cur_tag, store_data};
+          cache_valid_w = 1'b1;
+          cache_dirty_w = 1'b1;
+          cache_mru_w = 1'b1;
           next_hit_ack = 1'b1;
         end else begin
           next_full_stall = 1'b1;
@@ -181,22 +209,36 @@ module dcache (
           load_way_in = !mru[cur_set];
           addr_load = addr_in;
           mshr_regD_in = regD_in;
-          next_dirty[cur_set][!mru[cur_set]] = 1'b0;
-          next_valid[cur_set][!mru[cur_set]] = 1'b0; //prevent loading potentially stale data or storing to line that will be replaced
+          cache_set_w = cur_set;
+          cache_way_w = !mru[cur_set];
+          cache_dirty_we = 1'b1;
+          cache_valid_we = 1'b1;
+          cache_dirty_w = 1'b0;
+          cache_valid_w = 1'b0; //prevent loading potentially stale data or storing to line that will be replaced
         end else begin //store miss automatically replaces line
           next_hit_ack = 1'b1;
-          next_data[cur_set][!mru[cur_set]] = store_data;
-          next_tag[cur_set][!mru[cur_set]] = cur_tag;
-          next_valid[cur_set][!mru[cur_set]] = 1'b1;
-          next_dirty[cur_set][!mru[cur_set]] = 1'b1;
-          next_mru[cur_set] = !mru[cur_set];
+          cache_set_w = cur_set;
+          cache_way_w = !mru[cur_set];
+          cache_payload_we = 1'b1;
+          cache_valid_we = 1'b1;
+          cache_dirty_we = 1'b1;
+          cache_mru_we = 1'b1;
+          cache_payload_w = {cur_tag, store_data};
+          cache_valid_w = 1'b1;
+          cache_dirty_w = 1'b1;
+          cache_mru_w = !mru[cur_set];
         end
         
         //eviction handling
         if (dirty[cur_set][!mru[cur_set]] && valid[cur_set][!mru[cur_set]]) begin
           evict_valid = 1'b1;
-          addr_evict = {tag[cur_set][!mru[cur_set]], cur_set, 2'b0};
-          evict_data = data[cur_set][!mru[cur_set]];
+          if (mru[cur_set]) begin
+            addr_evict = {payload_way0[cur_set][TAG_BITS+31:32], cur_set, 2'b0};
+            evict_data = payload_way0[cur_set][31:0];
+          end else begin
+            addr_evict = {payload_way1[cur_set][TAG_BITS+31:32], cur_set, 2'b0};
+            evict_data = payload_way1[cur_set][31:0];
+          end
         end
       end
     end 
@@ -207,8 +249,6 @@ module dcache (
       for (int i = 0; i < NUM_SETS; i++) begin
         mru[i] <= 0;
         for (int j = 0; j < NUM_WAYS; j++) begin
-          data[i][j] <= '0;
-          tag[i][j] <= '0;
           valid[i][j] <= 0;
           dirty [i][j] <= 0;
         end
@@ -221,15 +261,9 @@ module dcache (
       load_data <= '0;
       regD_out <= '0;
     end else begin
-      for (int i = 0; i < NUM_SETS; i++) begin
-        mru[i] <= next_mru[i];
-        for (int j = 0; j < NUM_WAYS; j++) begin
-          data[i][j] <= next_data[i][j];
-          tag[i][j] <= next_tag[i][j];
-          valid[i][j] <= next_valid[i][j];
-          dirty[i][j] <= next_dirty[i][j];
-        end
-      end
+      if (cache_mru_we) mru[cache_set_w] <= cache_mru_w;
+      if (cache_valid_we) valid[cache_set_w][cache_way_w] <= cache_valid_w;
+      if (cache_dirty_we) dirty[cache_set_w][cache_way_w] <= cache_dirty_w;
       load_done_stall <= next_load_done_stall;
       full_stall <= next_full_stall;
       addr_dep <= next_addr_dep;
@@ -237,6 +271,15 @@ module dcache (
       miss_send <= next_miss_send;
       load_data <= next_load_data;
       regD_out <= next_regD_out;
+    end
+  end
+
+  // A transaction writes at most one way. The payload memories need no reset;
+  // valid is reset and suppresses every access until a complete payload write.
+  always_ff @(posedge clk) begin
+    if (!rst && cache_payload_we) begin
+      if (cache_way_w) payload_way1[cache_set_w] <= cache_payload_w;
+      else payload_way0[cache_set_w] <= cache_payload_w;
     end
   end
 endmodule

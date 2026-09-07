@@ -20,13 +20,14 @@ module wb_simulator #(
 
     localparam int ADDR_INDEX_WIDTH = $clog2(DEPTH);
 
-    logic [31:0] mem [0:DEPTH-1];
+    (* ram_style = "block" *) logic [31:0] mem [0:DEPTH-1];
 
     logic [$clog2(LATENCY+1)-1:0] counter;
     logic pending;
     logic pending_we;
     logic [31:0] addr_reg;
     logic [31:0] wdata_reg;
+    logic [31:0] mem_rdata;
 
     wire [ADDR_INDEX_WIDTH-1:0] addr_index;
     wire [ADDR_INDEX_WIDTH-1:0] addr_reg_index;
@@ -36,6 +37,21 @@ module wb_simulator #(
 
     initial begin
         $readmemh(MEM_FILE, mem);
+    end
+
+    // Keep the memory port outside the asynchronously reset transaction
+    // process so FPGA synthesis can infer block RAM. A read is sampled when
+    // its request is accepted; the state machine exposes it only when the
+    // configured transaction latency expires. Writes still occur on the
+    // completion cycle, matching the original behavior.
+    always_ff @(posedge clk) begin
+        if (req && !busy && !we) begin
+            mem_rdata <= mem[addr_index];
+        end
+
+        if (pending && counter == 0 && pending_we) begin
+            mem[addr_reg_index] <= wdata_reg;
+        end
     end
 
     always_ff @(posedge clk or negedge rst_n) begin
@@ -64,11 +80,7 @@ module wb_simulator #(
                     busy    <= 1'b0;
                     valid   <= 1'b1;
 
-                    if (pending_we) begin
-                        mem[addr_reg_index] <= wdata_reg;
-                    end else begin
-                        rdata <= mem[addr_reg_index];
-                    end
+                    if (!pending_we) rdata <= mem_rdata;
                 end else begin
                     counter <= counter - 1'b1;
                 end

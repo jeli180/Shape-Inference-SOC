@@ -100,29 +100,54 @@ module tensor_controller (
   logic [4:0] unvalid, next_unvalid; //tracks first empty index of shifter (0 means empty)
   logic next_en, next_clear;
 
-  //output store
-  logic [31:0] layer1_1 [0:63];
-  logic [31:0] layer1_2 [0:63];
-  logic [31:0] layer1_3 [0:63];
-  logic [31:0] layer1_4 [0:63];
-  logic [31:0] layer2_1 [0:2];
-  logic [31:0] layer2_2 [0:2];
-  logic [31:0] layer2_3 [0:2];
-  logic [31:0] layer2_4 [0:2];
+  // Layer-one results are interleaved by neuron index across four banks. Each
+  // 128-bit word holds the four quadrants as {q4, q3, q2, q1}. STORE_1 writes
+  // one word to every bank in parallel; all later states access one neuron per
+  // cycle. This preserves the access schedule without a 256-entry next-state
+  // copy mux.
+  logic [127:0] layer1_bank0 [0:15];
+  logic [127:0] layer1_bank1 [0:15];
+  logic [127:0] layer1_bank2 [0:15];
+  logic [127:0] layer1_bank3 [0:15];
+  logic [127:0] layer1_read;
+  logic [5:0] layer1_read_index;
+  logic [3:0] layer1_we;
+  logic [3:0] layer1_waddr;
+  logic [127:0] layer1_wdata0, layer1_wdata1;
+  logic [127:0] layer1_wdata2, layer1_wdata3;
 
-  logic [31:0] next_layer1_1 [0:63];
-  logic [31:0] next_layer1_2 [0:63];
-  logic [31:0] next_layer1_3 [0:63];
-  logic [31:0] next_layer1_4 [0:63];
-  logic [31:0] next_layer2_1 [0:2];
-  logic [31:0] next_layer2_2 [0:2];
-  logic [31:0] next_layer2_3 [0:2];
-  logic [31:0] next_layer2_4 [0:2];
+  // Three class scores, with the same quadrant packing as layer one.
+  logic [127:0] layer2_0, layer2_1, layer2_2;
+  logic [2:0] layer2_we;
+  logic [127:0] layer2_wdata0, layer2_wdata1, layer2_wdata2;
+
+  function automatic logic [31:0] quantize_word(
+    input logic [31:0] value,
+    input logic [4:0] shift_amount
+  );
+    logic [31:0] rounded;
+    begin
+      rounded = (value + (32'd1 << (shift_amount - 1))) >> shift_amount;
+      quantize_word = (rounded > 32'd127) ? 32'd127 : rounded;
+    end
+  endfunction
+
+  function automatic logic [127:0] quantize_layer1(
+    input logic [127:0] value,
+    input logic [4:0] shift_amount
+  );
+    begin
+      quantize_layer1 = {quantize_word(value[127:96], shift_amount),
+                         quantize_word(value[95:64], shift_amount),
+                         quantize_word(value[63:32], shift_amount),
+                         quantize_word(value[31:0], shift_amount)};
+    end
+  endfunction
 
   //counters (always point to mem addr rdata in the current cycle is from (so need to req ct + 1))
   logic [11:0] next_col_ct, col_ct; //goes to 3600
   logic [3:0] next_row4_ct, row4_ct; //goes to 16
-  logic [5:0] next_ct2, ct2; //used by L2_FILL in shift state machine
+  logic [6:0] next_ct2, ct2; //used by L2_FILL; must represent the terminal value 64
 
   //cpu interface signals/reg
   logic next_mmio_ack;
@@ -172,6 +197,18 @@ module tensor_controller (
   assign test_col_shift0 = col_shift[0];
   assign test_row_shift0 = row_shift[0];
 
+  // The first L2_FILL cycle reads neurons 0, 1, and 2 directly from three
+  // banks. Every other layer-one operation needs one logical read port.
+  always_comb begin
+    layer1_read_index = (stateS == L2_FILL) ? ct2[5:0] : col_ct[5:0];
+    case (layer1_read_index[1:0])
+      2'd0: layer1_read = layer1_bank0[layer1_read_index[5:2]];
+      2'd1: layer1_read = layer1_bank1[layer1_read_index[5:2]];
+      2'd2: layer1_read = layer1_bank2[layer1_read_index[5:2]];
+      default: layer1_read = layer1_bank3[layer1_read_index[5:2]];
+    endcase
+  end
+
   always_comb begin
     //async defaults
     ren = 0;
@@ -193,19 +230,16 @@ module tensor_controller (
     next_en = en;
     next_clear = 0;
 
-    for (int i = 0; i < 64; i++) begin
-      next_layer1_1[i] = layer1_1[i];
-      next_layer1_2[i] = layer1_2[i];
-      next_layer1_3[i] = layer1_3[i];
-      next_layer1_4[i] = layer1_4[i];
-    end
-
-    for (int i = 0; i < 3; i++) begin
-      next_layer2_1[i] = layer2_1[i];
-      next_layer2_2[i] = layer2_2[i];
-      next_layer2_3[i] = layer2_3[i];
-      next_layer2_4[i] = layer2_4[i];
-    end
+    layer1_we = '0;
+    layer1_waddr = '0;
+    layer1_wdata0 = '0;
+    layer1_wdata1 = '0;
+    layer1_wdata2 = '0;
+    layer1_wdata3 = '0;
+    layer2_we = '0;
+    layer2_wdata0 = '0;
+    layer2_wdata1 = '0;
+    layer2_wdata2 = '0;
 
     next_col_ct = col_ct;
     next_row4_ct = row4_ct;
@@ -382,12 +416,12 @@ module tensor_controller (
       STORE_1: begin
         //store the outputs of each MAC and process row4_ct
         //clear macs
-        for (int i = 0; i < 4; i++) begin
-          next_layer1_1[row4_ct * 4 + i] = output_col1[i];
-          next_layer1_2[row4_ct * 4 + i] = output_col2[i];
-          next_layer1_3[row4_ct * 4 + i] = output_col3[i];
-          next_layer1_4[row4_ct * 4 + i] = output_col4[i];
-        end
+        layer1_we = 4'b1111;
+        layer1_waddr = row4_ct;
+        layer1_wdata0 = {output_col4[0], output_col3[0], output_col2[0], output_col1[0]};
+        layer1_wdata1 = {output_col4[1], output_col3[1], output_col2[1], output_col1[1]};
+        layer1_wdata2 = {output_col4[2], output_col3[2], output_col2[2], output_col1[2]};
+        layer1_wdata3 = {output_col4[3], output_col3[3], output_col2[3], output_col1[3]};
         next_clear = 1'b1;
         next_row4_ct = row4_ct + 4'd1;
         next_col_ct = '0;
@@ -410,10 +444,26 @@ module tensor_controller (
       BIAS_1: begin
         //use col_ct to read 64 32b bias values from tensor_mem
         //first bias element is already in rdata since we reqed in STORE_1
-        next_layer1_1[col_ct] = layer1_1[col_ct] + rdata;
-        next_layer1_2[col_ct] = layer1_2[col_ct] + rdata;
-        next_layer1_3[col_ct] = layer1_3[col_ct] + rdata;
-        next_layer1_4[col_ct] = layer1_4[col_ct] + rdata;
+        layer1_we[col_ct[1:0]] = 1'b1;
+        layer1_waddr = col_ct[5:2];
+        case (col_ct[1:0])
+          2'd0: layer1_wdata0 = {layer1_read[127:96] + rdata,
+                                 layer1_read[95:64] + rdata,
+                                 layer1_read[63:32] + rdata,
+                                 layer1_read[31:0] + rdata};
+          2'd1: layer1_wdata1 = {layer1_read[127:96] + rdata,
+                                 layer1_read[95:64] + rdata,
+                                 layer1_read[63:32] + rdata,
+                                 layer1_read[31:0] + rdata};
+          2'd2: layer1_wdata2 = {layer1_read[127:96] + rdata,
+                                 layer1_read[95:64] + rdata,
+                                 layer1_read[63:32] + rdata,
+                                 layer1_read[31:0] + rdata};
+          default: layer1_wdata3 = {layer1_read[127:96] + rdata,
+                                    layer1_read[95:64] + rdata,
+                                    layer1_read[63:32] + rdata,
+                                    layer1_read[31:0] + rdata};
+        endcase
         if (col_ct < 63) begin
           //req for next BIAS_1
           ren = 1'b1;
@@ -426,27 +476,56 @@ module tensor_controller (
         end
       end   
       RELU: begin
-        for (int i = 0; i < 64; i++) begin
-          next_layer1_1[i] = layer1_1[i][31] ? '0 : layer1_1[i];
-          next_layer1_2[i] = layer1_2[i][31] ? '0 : layer1_2[i];
-          next_layer1_3[i] = layer1_3[i][31] ? '0 : layer1_3[i];
-          next_layer1_4[i] = layer1_4[i][31] ? '0 : layer1_4[i];
+        // Process one neuron per cycle. The CPU waits on the controller, so
+        // this preserves the interface while avoiding 64 parallel datapaths.
+        layer1_we[col_ct[1:0]] = 1'b1;
+        layer1_waddr = col_ct[5:2];
+        case (col_ct[1:0])
+          2'd0: layer1_wdata0 = {layer1_read[127] ? 32'b0 : layer1_read[127:96],
+                                 layer1_read[95] ? 32'b0 : layer1_read[95:64],
+                                 layer1_read[63] ? 32'b0 : layer1_read[63:32],
+                                 layer1_read[31] ? 32'b0 : layer1_read[31:0]};
+          2'd1: layer1_wdata1 = {layer1_read[127] ? 32'b0 : layer1_read[127:96],
+                                 layer1_read[95] ? 32'b0 : layer1_read[95:64],
+                                 layer1_read[63] ? 32'b0 : layer1_read[63:32],
+                                 layer1_read[31] ? 32'b0 : layer1_read[31:0]};
+          2'd2: layer1_wdata2 = {layer1_read[127] ? 32'b0 : layer1_read[127:96],
+                                 layer1_read[95] ? 32'b0 : layer1_read[95:64],
+                                 layer1_read[63] ? 32'b0 : layer1_read[63:32],
+                                 layer1_read[31] ? 32'b0 : layer1_read[31:0]};
+          default: layer1_wdata3 = {layer1_read[127] ? 32'b0 : layer1_read[127:96],
+                                    layer1_read[95] ? 32'b0 : layer1_read[95:64],
+                                    layer1_read[63] ? 32'b0 : layer1_read[63:32],
+                                    layer1_read[31] ? 32'b0 : layer1_read[31:0]};
+        endcase
+        if (col_ct < 12'd63) begin
+          next_col_ct = col_ct + 12'd1;
+        end else begin
+          next_col_ct = '0;
+          next_stateC = QUANT;
         end
-        next_stateC = QUANT;
       end
       QUANT: begin
-        for (int i = 0; i < 64; i++) begin
-          next_layer1_1[i] = ((layer1_1[i] + (32'd1 << (shift - 1))) >> shift) > 32'd127 ? 32'd127 : ((layer1_1[i] + (32'd1 << (shift - 1))) >> shift);
-          next_layer1_2[i] = ((layer1_2[i] + (32'd1 << (shift - 1))) >> shift) > 32'd127 ? 32'd127 : ((layer1_2[i] + (32'd1 << (shift - 1))) >> shift);
-          next_layer1_3[i] = ((layer1_3[i] + (32'd1 << (shift - 1))) >> shift) > 32'd127 ? 32'd127 : ((layer1_3[i] + (32'd1 << (shift - 1))) >> shift);
-          next_layer1_4[i] = ((layer1_4[i] + (32'd1 << (shift - 1))) >> shift) > 32'd127 ? 32'd127 : ((layer1_4[i] + (32'd1 << (shift - 1))) >> shift);
-        end
-        next_stateS = L2_FILL;
-        next_stateC = WAIT_FILL_2;
+        layer1_we[col_ct[1:0]] = 1'b1;
+        layer1_waddr = col_ct[5:2];
+        case (col_ct[1:0])
+          2'd0: layer1_wdata0 = quantize_layer1(layer1_read, shift);
+          2'd1: layer1_wdata1 = quantize_layer1(layer1_read, shift);
+          2'd2: layer1_wdata2 = quantize_layer1(layer1_read, shift);
+          default: layer1_wdata3 = quantize_layer1(layer1_read, shift);
+        endcase
 
-        //req for WAIT_FILL_2
-        ren = 1'b1;
-        raddr = W2_MEM_START;
+        if (col_ct < 12'd63) begin
+          next_col_ct = col_ct + 12'd1;
+        end else begin
+          next_col_ct = '0;
+          next_stateS = L2_FILL;
+          next_stateC = WAIT_FILL_2;
+
+          //req for WAIT_FILL_2
+          ren = 1'b1;
+          raddr = W2_MEM_START;
+        end
       end
       WAIT_FILL_2: begin 
         next_row_shift[0] = {24'b0, rdata[7:0]};
@@ -495,12 +574,10 @@ module tensor_controller (
         end
       end
       STORE_2: begin
-        for (int i = 0; i < 3; i++) begin
-          next_layer2_1[i] = output_col1[i];
-          next_layer2_2[i] = output_col2[i];
-          next_layer2_3[i] = output_col3[i];
-          next_layer2_4[i] = output_col4[i];
-        end
+        layer2_we = 3'b111;
+        layer2_wdata0 = {output_col4[0], output_col3[0], output_col2[0], output_col1[0]};
+        layer2_wdata1 = {output_col4[1], output_col3[1], output_col2[1], output_col1[1]};
+        layer2_wdata2 = {output_col4[2], output_col3[2], output_col2[2], output_col1[2]};
         next_clear = 1'b1;
         next_stateC = BIAS_2;
         next_stateS = CLEAR;
@@ -511,10 +588,21 @@ module tensor_controller (
       BIAS_2: begin
         //use col_ct to read 3 32b bias values from tensor_mem
         //first bias element is in rdata
-        next_layer2_1[col_ct] = layer2_1[col_ct] + rdata;
-        next_layer2_2[col_ct] = layer2_2[col_ct] + rdata;
-        next_layer2_3[col_ct] = layer2_3[col_ct] + rdata;
-        next_layer2_4[col_ct] = layer2_4[col_ct] + rdata;
+        layer2_we[col_ct[1:0]] = 1'b1;
+        case (col_ct[1:0])
+          2'd0: layer2_wdata0 = {layer2_0[127:96] + rdata,
+                                 layer2_0[95:64] + rdata,
+                                 layer2_0[63:32] + rdata,
+                                 layer2_0[31:0] + rdata};
+          2'd1: layer2_wdata1 = {layer2_1[127:96] + rdata,
+                                 layer2_1[95:64] + rdata,
+                                 layer2_1[63:32] + rdata,
+                                 layer2_1[31:0] + rdata};
+          default: layer2_wdata2 = {layer2_2[127:96] + rdata,
+                                    layer2_2[95:64] + rdata,
+                                    layer2_2[63:32] + rdata,
+                                    layer2_2[31:0] + rdata};
+        endcase
         if (col_ct < 2) begin
           ren = 1'b1;
           raddr = B2_MEM_START + col_ct + 1;
@@ -527,20 +615,20 @@ module tensor_controller (
         //layer2_x[0] is circle, [1] is square, [2] is line
         //first 3 bits is col1, 100 is circle, 010 is square, 001 is line
         //in equal cases, circle has highest prio, line has lowest
-        if ($signed(layer2_1[0]) >= $signed(layer2_1[1]) && $signed(layer2_1[0]) >= $signed(layer2_1[2])) next_shape[2:0] = 3'b100;
-        else if ($signed(layer2_1[1]) > $signed(layer2_1[0]) && $signed(layer2_1[1]) >= $signed(layer2_1[2])) next_shape[2:0] = 3'b010;
+        if ($signed(layer2_0[31:0]) >= $signed(layer2_1[31:0]) && $signed(layer2_0[31:0]) >= $signed(layer2_2[31:0])) next_shape[2:0] = 3'b100;
+        else if ($signed(layer2_1[31:0]) > $signed(layer2_0[31:0]) && $signed(layer2_1[31:0]) >= $signed(layer2_2[31:0])) next_shape[2:0] = 3'b010;
         else next_shape[2:0] = 3'b001;
 
-        if ($signed(layer2_2[0]) >= $signed(layer2_2[1]) && $signed(layer2_2[0]) >= $signed(layer2_2[2])) next_shape[5:3] = 3'b100;
-        else if ($signed(layer2_2[1]) > $signed(layer2_2[0]) && $signed(layer2_2[1]) >= $signed(layer2_2[2])) next_shape[5:3] = 3'b010;
+        if ($signed(layer2_0[63:32]) >= $signed(layer2_1[63:32]) && $signed(layer2_0[63:32]) >= $signed(layer2_2[63:32])) next_shape[5:3] = 3'b100;
+        else if ($signed(layer2_1[63:32]) > $signed(layer2_0[63:32]) && $signed(layer2_1[63:32]) >= $signed(layer2_2[63:32])) next_shape[5:3] = 3'b010;
         else next_shape[5:3] = 3'b001;
 
-        if ($signed(layer2_3[0]) >= $signed(layer2_3[1]) && $signed(layer2_3[0]) >= $signed(layer2_3[2])) next_shape[8:6] = 3'b100;
-        else if ($signed(layer2_3[1]) > $signed(layer2_3[0]) && $signed(layer2_3[1]) >= $signed(layer2_3[2])) next_shape[8:6] = 3'b010;
+        if ($signed(layer2_0[95:64]) >= $signed(layer2_1[95:64]) && $signed(layer2_0[95:64]) >= $signed(layer2_2[95:64])) next_shape[8:6] = 3'b100;
+        else if ($signed(layer2_1[95:64]) > $signed(layer2_0[95:64]) && $signed(layer2_1[95:64]) >= $signed(layer2_2[95:64])) next_shape[8:6] = 3'b010;
         else next_shape[8:6] = 3'b001;
 
-        if ($signed(layer2_4[0]) >= $signed(layer2_4[1]) && $signed(layer2_4[0]) >= $signed(layer2_4[2])) next_shape[11:9] = 3'b100;
-        else if ($signed(layer2_4[1]) > $signed(layer2_4[0]) && $signed(layer2_4[1]) >= $signed(layer2_4[2])) next_shape[11:9] = 3'b010;
+        if ($signed(layer2_0[127:96]) >= $signed(layer2_1[127:96]) && $signed(layer2_0[127:96]) >= $signed(layer2_2[127:96])) next_shape[11:9] = 3'b100;
+        else if ($signed(layer2_1[127:96]) > $signed(layer2_0[127:96]) && $signed(layer2_1[127:96]) >= $signed(layer2_2[127:96])) next_shape[11:9] = 3'b010;
         else next_shape[11:9] = 3'b001;
 
         next_shape[31] = 1'b1; //make bus valid
@@ -563,20 +651,6 @@ module tensor_controller (
           next_unvalid = '0;
           next_en = '0;
           next_clear = '0;
-
-          for (int i = 0; i < 64; i++) begin
-            next_layer1_1[i] = '0;
-            next_layer1_2[i] = '0;
-            next_layer1_3[i] = '0;
-            next_layer1_4[i] = '0;
-          end
-
-          for (int i = 0; i < 3; i++) begin
-            next_layer2_1[i] = '0;
-            next_layer2_2[i] = '0;
-            next_layer2_3[i] = '0;
-            next_layer2_4[i] = '0;
-          end
 
           next_col_ct = '0;
           next_row4_ct = '0;
@@ -650,15 +724,15 @@ module tensor_controller (
         //ct2 tracks index of layer1_x, should be the value used in the current cycle
         if (ct2 < 64) begin //stop shifting in new data when all inputs are used up
           if (unvalid == '0) begin //starting case (should never be 0 after)
-            next_col_shift[0] = {layer1_4[ct2][7:0], layer1_3[ct2][7:0], layer1_2[ct2][7:0], layer1_1[ct2][7:0]};
-            next_col_shift[1] = {layer1_4[ct2 + 1][7:0], layer1_3[ct2 + 1][7:0], layer1_2[ct2 + 1][7:0], layer1_1[ct2 + 1][7:0]};
-            next_col_shift[2] = {layer1_4[ct2 + 2][7:0], layer1_3[ct2 + 2][7:0], layer1_2[ct2 + 2][7:0], layer1_1[ct2 + 2][7:0]};
+            next_col_shift[0] = {layer1_read[103:96], layer1_read[71:64], layer1_read[39:32], layer1_read[7:0]};
+            next_col_shift[1] = {layer1_bank1[0][103:96], layer1_bank1[0][71:64], layer1_bank1[0][39:32], layer1_bank1[0][7:0]};
+            next_col_shift[2] = {layer1_bank2[0][103:96], layer1_bank2[0][71:64], layer1_bank2[0][39:32], layer1_bank2[0][7:0]};
             next_ct2 = ct2 + 3;
             next_unvalid = 3;
           end else if (unvalid == 2) begin //technically unvalid isn't needed since it remains 2 and never dips to 0
             //currently col_shift idx 0, 1 both valid, stateC will shift idx 1 to 0 on next cycle
             //so we set next idx 1 to new data and keep unvalid = 2
-            next_col_shift[1] = {layer1_4[ct2][7:0], layer1_3[ct2][7:0], layer1_2[ct2][7:0], layer1_1[ct2][7:0]};
+            next_col_shift[1] = {layer1_read[103:96], layer1_read[71:64], layer1_read[39:32], layer1_read[7:0]};
             next_unvalid = 2;
             next_ct2 = ct2 + 1;
           end
@@ -684,20 +758,6 @@ module tensor_controller (
       unvalid <= '0;
       en <= 0;
       clear <= 0;
-
-      for (int i = 0; i < 64; i++) begin
-        layer1_1[i] <= '0;
-        layer1_2[i] <= '0;
-        layer1_3[i] <= '0;
-        layer1_4[i] <= '0;
-      end
-
-      for (int i = 0; i < 3; i++) begin
-        layer2_1[i] <= '0;
-        layer2_2[i] <= '0;
-        layer2_3[i] <= '0;
-        layer2_4[i] <= '0;
-      end
 
       col_ct <= '0;
       row4_ct <= '0;
@@ -725,20 +785,6 @@ module tensor_controller (
       en <= next_en;
       clear <= next_clear;
 
-      for (int i = 0; i < 64; i++) begin
-        layer1_1[i] <= next_layer1_1[i];
-        layer1_2[i] <= next_layer1_2[i];
-        layer1_3[i] <= next_layer1_3[i];
-        layer1_4[i] <= next_layer1_4[i];
-      end
-
-      for (int i = 0; i < 3; i++) begin
-        layer2_1[i] <= next_layer2_1[i];
-        layer2_2[i] <= next_layer2_2[i];
-        layer2_3[i] <= next_layer2_3[i];
-        layer2_4[i] <= next_layer2_4[i];
-      end
-
       col_ct <= next_col_ct;
       row4_ct <= next_row4_ct;
       ct2 <= next_ct2;
@@ -752,9 +798,25 @@ module tensor_controller (
     end
   end
 
+  // STORE_1 and STORE_2 overwrite every result before it is consumed, so
+  // these storage elements do not need reset values. The reset-free write
+  // process also allows the layer-one banks to infer as memories.
+  always_ff @(posedge clk) begin
+    if (!rst) begin
+      if (layer1_we[0]) layer1_bank0[layer1_waddr] <= layer1_wdata0;
+      if (layer1_we[1]) layer1_bank1[layer1_waddr] <= layer1_wdata1;
+      if (layer1_we[2]) layer1_bank2[layer1_waddr] <= layer1_wdata2;
+      if (layer1_we[3]) layer1_bank3[layer1_waddr] <= layer1_wdata3;
+
+      if (layer2_we[0]) layer2_0 <= layer2_wdata0;
+      if (layer2_we[1]) layer2_1 <= layer2_wdata1;
+      if (layer2_we[2]) layer2_2 <= layer2_wdata2;
+    end
+  end
+
   wb_1cycle #(
     .MEM_FILE("mlp_weights.memh"),
-    .DEPTH(57800)
+    .DEPTH(57731)
   ) wb0 (
     .clk(clk),
     .rst(rst),

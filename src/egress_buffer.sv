@@ -1,4 +1,6 @@
-module egress_buffer (
+module egress_buffer #(
+    parameter int CLK_HZ = 25_000_000
+) (
     input logic clk, rst,
 
     //tower
@@ -17,7 +19,9 @@ module egress_buffer (
     logic busy, valid;
     logic [7:0] data;
 
-    uart_transmitter tx0(
+    uart_transmitter #(
+        .CLK_HZ(CLK_HZ)
+    ) tx0(
         .clk(clk),
         .rst(rst),
         .data(data),

@@ -26,6 +26,10 @@
 # (get rid of status bits) and send to mem | this is because 3600 / 32 = 12.5
 
 # init DPU
+.section .text
+.globl _start
+
+_start:
 sw x0, 4(x0)
 
 repeat:
@@ -77,6 +81,8 @@ sw x4, 0(x29)
 addi x29, x29, 4
 addi x27, x0, 0 # reset x27 for next quadrant
 # check last pixel (bits 32, 31 still in x3)
+addi x28, x0, 0 # reset packed-bit count
+addi x4, x0, 0  # reset packing accumulator
 beq x3, x13, start_inference
 jal x0, poll_dpu_pixel
 
@@ -103,6 +109,12 @@ add x14, x13, x15
 
 # init tensor
 sw x0, 4(x30)
+
+addi x16, x0, 16 # number of 4-neuron groups in the 64-neuron first layer
+addi x9, x0, 0 # tracks completed passes over the 3600 input pixels
+
+inference_loop:
+addi x9, x9, 1
 addi x10, x0, 0 
 addi x4, x0, 1
 addi x5, x0, 2
@@ -117,10 +129,15 @@ slli x20, x17, 24
 # x3 is status (1 means byte 1 loaded to x1, 2 means byte 2 loaded to x1, etc)
 # get 32b bus for each quadrant from dcache, load into x21-24, mask into x25-28
 get_tc_pixel:
-lw x21, x10(x11)
-lw x22, x10(x12)
-lw x23, x10(x13)
-lw x24, x10(x14)
+add x25, x10, x11
+add x26, x10, x12
+add x27, x10, x13
+add x28, x10, x14
+
+lw x21, 0(x25)
+lw x22, 0(x26)
+lw x23, 0(x27)
+lw x24, 0(x28)
 
 addi x10, x10, 4 # point to next pixel bus
 
@@ -223,6 +240,7 @@ send_tensor_last:
 lw x2, 8(x30)
 beq x0, x2, send_tensor_last
 sw x1, 8(x30)
+bne x9, x16, inference_loop
 jal x0, get_tensor_shape
 
 
@@ -253,6 +271,5 @@ sw x3, 8(x0)
 
 # all done, go back to polling dpu pixels for next inference process
 jal x0, repeat
-
 
 

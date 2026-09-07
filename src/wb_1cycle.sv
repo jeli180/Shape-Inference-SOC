@@ -11,19 +11,28 @@ module wb_1cycle #(
     output logic [31:0] rdata
 );
     // --- memory ---
-    logic [31:0] mem [0:DEPTH-1];
+    localparam int ADDR_WIDTH = $clog2(DEPTH);
+
+    (* ram_style = "block" *) logic [31:0] mem [0:DEPTH-1];
     initial $readmemh(MEM_FILE, mem);
 
-    logic [31:0] next_rdata;
+    logic [31:0] mem_rdata;
+    logic ren_d;
+    wire [ADDR_WIDTH-1:0] addr_index = addr[ADDR_WIDTH-1:0];
 
-    always_comb begin
-      next_rdata = '0;
-      if (ren) next_rdata = mem[addr];
+    // Keep the memory read itself free of reset/clear logic so synthesis can
+    // implement this large, read-only table with ECP5 block RAMs.
+    always_ff @(posedge clk) begin
+      if (ren) mem_rdata <= mem[addr_index];
     end
 
     always_ff @(posedge clk or posedge rst) begin
-      if (rst) rdata <= '0;
-      else rdata <= next_rdata;
+      if (rst) ren_d <= 1'b0;
+      else ren_d <= ren;
     end
+
+    // Preserve the original interface behavior: rdata is zero after a cycle
+    // without ren and otherwise contains the registered ROM value.
+    assign rdata = ren_d ? mem_rdata : '0;
 
 endmodule

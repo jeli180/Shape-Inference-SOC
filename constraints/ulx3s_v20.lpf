@@ -6,6 +6,7 @@ BLOCK ASYNCPATHS;
 LOCATE COMP "clk_25mhz" SITE "G2";
 IOBUF  PORT "clk_25mhz" PULLMODE=NONE IO_TYPE=LVCMOS33;
 FREQUENCY PORT "clk_25mhz" 25 MHZ;
+FREQUENCY NET "clk_12_5mhz" 12.5 MHZ;
 
 # JTAG and SPI FLASH voltage 3.3V and options to boot from SPI flash
 # write to FLASH possible any time from JTAG:

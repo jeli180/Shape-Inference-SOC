@@ -1,4 +1,7 @@
-module ingress_buffer #(parameter int IB_DEPTH = 31) (
+module ingress_buffer #(
+    parameter int IB_DEPTH = 31,
+    parameter int CLK_HZ = 25_000_000
+) (
     input logic clk, rst,
 
     //tower interface
@@ -18,7 +21,9 @@ module ingress_buffer #(parameter int IB_DEPTH = 31) (
     logic [7:0] data;
     logic valid;
 
-    uart_reciever rx0 (
+    uart_reciever #(
+        .CLK_HZ(CLK_HZ)
+    ) rx0 (
         .clk(clk),
         .rst(rst),
         .data(data),

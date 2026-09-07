@@ -37,7 +37,8 @@ credit scheme:
 */
 
 module uart_tower #(
-    parameter int IB_DEPTH = 31 //only value supported for now
+    parameter int IB_DEPTH = 31, //only value supported for now
+    parameter int CLK_HZ = 25_000_000
 ) (
     input logic clk, rst,
 
@@ -89,7 +90,10 @@ module uart_tower #(
 
     logic [$clog2(IB_DEPTH + 1) - 1 : 0] free_cred, next_free_cred;
 
-    ingress_buffer #(IB_DEPTH) ib0 (
+    ingress_buffer #(
+        .IB_DEPTH(IB_DEPTH),
+        .CLK_HZ(CLK_HZ)
+    ) ib0 (
         .clk(clk),
         .rst(rst),
         .rx_data(rx_data),
@@ -100,7 +104,9 @@ module uart_tower #(
         .uart_rx(uart_rx)
     );
 
-    egress_buffer tx0(
+    egress_buffer #(
+        .CLK_HZ(CLK_HZ)
+    ) tx0(
         .clk(clk),
         .rst(rst),
         .tx_data(tx_data),
