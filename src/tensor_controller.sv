@@ -815,7 +815,7 @@ module tensor_controller (
   end
 
   wb_1cycle #(
-    .MEM_FILE("mlp_weights.memh"),
+    .MEM_FILE("memh/mlp_weights.memh"),
     .DEPTH(57731)
   ) wb0 (
     .clk(clk),

@@ -1,7 +1,5 @@
-# in the actual hex file, add machine code to load weight/biases to tensor mem
-# the asm is in weight_load folder
-
-# the rest of this code assumes weights have already been loaded
+# Tensor weights and biases are initialized from memh/mlp_weights.memh when the
+# FPGA bitstream is built, so this program begins with inference setup.
 
 # need to store 32bit buses to dcache when DPU sends them 30 at a time (top 2 are status bits)
 # 2 registers that hold pixel data: data_store (x1) where i lw into and data_send (x4) which will be sw to mem
@@ -271,5 +269,4 @@ sw x3, 8(x0)
 
 # all done, go back to polling dpu pixels for next inference process
 jal x0, repeat
-
 

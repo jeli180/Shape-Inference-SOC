@@ -3,7 +3,7 @@
 ## Weight ROM depth
 
 The instantiated depth was reduced from 57,800 words to the exact 57,731 words
-present in `mlp_weights.memh`. All controller-generated weight addresses remain
+present in `memh/mlp_weights.memh`. All controller-generated weight addresses remain
 in that range, so this change is cycle-equivalent for every reachable request.
 
 ## Serialized ReLU and quantization

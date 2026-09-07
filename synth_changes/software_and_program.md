@@ -26,6 +26,6 @@ global `_start`. It also received three functional corrections:
 - repeat the first-layer input traversal 16 times for all 64 neurons.
 
 These are intentional program fixes, not cycle-equivalent substitutions for
-the previous assembly. `instruction_memory.memh` contains 153 RV32I words and
+the previous assembly. `memh/instruction_memory.memh` contains 153 RV32I words and
 was checked instruction-for-instruction against the assembled source. It uses
 no compressed instructions.

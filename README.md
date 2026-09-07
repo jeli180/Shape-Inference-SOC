@@ -5,6 +5,8 @@ an integer MLP accelerator, and returns a class for each quadrant. The current
 top level targets the ECP5-85K ULX3S board and runs the complete CPU, cache,
 UART, and tensor path in one 12.5 MHz clock domain.
 
+![Shape Inference SoC top-level diagram](docs/top_level_diagram.png)
+
 ## System flow
 
 1. The desktop app connects at 115200 baud and waits in **INIT**. On FPGA reset,
@@ -48,18 +50,14 @@ from the memory and writeback stages are forwarded into execute to avoid
 unnecessary register-dependency stalls.
 
 The 64-byte instruction cache holds 16 instructions from one aligned block.
-Its registered request/response interface gives an ideal steady-state CPI of
-2. The data cache is 512 bytes: 64 sets, two ways, one 32-bit word per line,
-with dirty writeback and MRU-based replacement.
+The data cache is 512 bytes: 64 sets, two ways, one 32-bit word per line, with
+dirty writeback and MRU-based replacement.
 
-Load misses are non-blocking when later instructions are independent. A
-four-slot circular MSHR queues backing-memory loads and dirty evictions, while
-the CPU records outstanding destination registers and stalls only on a true
-data dependency, an address conflict, or queue pressure. The cache applies
-backpressure at three occupied slots so one load plus its possible dirty
-eviction can still be admitted together. Control transfers wait until pending
-loads retire so a late result cannot be written into the wrong control-flow
-context.
+The 4 MSHRs (miss status holding registers) allow for load and store misses
+from d-cache to be non-blocking. Loads require 2 MSHRs since the dirty cache
+line it replaces needs to be written in addition to the actual load. CPU
+records destination registers for instructions in the MSHR bank, and stalls
+the pipeline if later instructions are dependent on MSHR instructions.
 
 ## Drawing input and compression
 
@@ -99,10 +97,10 @@ are `0=circle`, `1=square`, and `2=line`.
 
 [`weight_to_memh.py`](mlp_model/weight_to_memh.py) packs four first-layer
 weights per 32-bit word, followed by the first-layer biases, three second-layer
-weights per word, and the output biases. The resulting 57,731-word
-[`mlp_weights.memh`](mlp_weights.memh) initializes the tensor block ROM when the
-bitstream is built; the current SoC does not load weights through CPU assembly
-at startup. The controller reads W1 sequentially in groups of four neurons,
+weights per word, and the output biases. The active 57,731-word
+[`mlp_weights.memh`](memh/mlp_weights.memh) initializes the tensor block ROM
+when the bitstream is built; the current SoC does not load weights through CPU
+assembly at startup. The controller reads W1 sequentially in groups of four neurons,
 runs four quadrant inputs in parallel through a 4 x 4 systolic array, stores 64
 hidden activations per quadrant in banks, then reads W2 and produces three
 scores per quadrant. Hardware outputs are one-hot: `001=line`, `010=square`,
@@ -121,7 +119,10 @@ credits with `0x5F`, which also tells the app that the FPGA reset, and later
 returns a grant whenever at least eight freed entries have accumulated. Because
 grants lag actual FIFO reads, the app's credit count is conservative: stopping
 at zero guarantees it cannot write more bytes than the hardware has space for.
-No RTS/CTS or XON/XOFF is used.
+No standard serial flow control is used. RTS (Request to Send) and CTS (Clear
+to Send) are dedicated hardware signals that tell the other endpoint when it
+may transmit. XON/XOFF uses special pause and resume bytes inside the data
+stream. This project disables them and uses its own byte-credit messages.
 
 CPU-to-app control bytes are `01cccccc` for a credit grant, `0x00` for
 initialization, and `0x80` followed by `[Q4:2][Q3:2][Q2:2][Q1:2]` for results.
@@ -137,6 +138,14 @@ Build all RTL files and program volatile FPGA SRAM:
 ```sh
 make bitstream SRCS='src/*.sv'
 make flash SRCS='src/*.sv'
+```
+
+Compile and run a SystemVerilog testbench with Icarus Verilog. Use `wave` to
+run the same test and open the generated VCD in GTKWave:
+
+```sh
+make sim TB=tb_icache
+make wave TB=tb_icache
 ```
 
 Then launch the drawing app from the repository root and reset the FPGA after

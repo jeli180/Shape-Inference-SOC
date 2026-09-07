@@ -1,5 +1,5 @@
 module wb_1cycle #(
-    parameter MEM_FILE = "mlp_weights.memh",
+    parameter MEM_FILE = "memh/mlp_weights.memh",
     parameter DEPTH = 1024
 )(
     input  logic        clk,

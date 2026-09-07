@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Generate weights.memh from:
+Generate memh/mlp_weights.memh from:
   1) W1_int8.txt   : 64 lines, each with 3600 signed int8 values
   2) W2_int8.txt   : 3 lines, each with 64 signed int8 values
   3) b1_int32.txt  : 1 line (or multiple lines), total 64 signed int32 values
   4) b2_int32.txt  : 1 line (or multiple lines), total 3 signed int32 values
 
 Output:
-  weights.memh
+  memh/mlp_weights.memh
 
 Packing format:
 - W1 first:
@@ -44,7 +44,7 @@ W1_FILE = BASE_DIR / "W1_int8.txt"
 W2_FILE = BASE_DIR / "W2_int8.txt"
 B1_FILE = BASE_DIR / "b1_int32.txt"
 B2_FILE = BASE_DIR / "b2_int32.txt"
-OUT_FILE = BASE_DIR / "weights.memh"
+OUT_FILE = BASE_DIR.parent / "memh" / "mlp_weights.memh"
 
 
 def read_all_ints(path: str) -> list[int]:
@@ -204,6 +204,7 @@ def main() -> None:
             f"but generated {len(memh_lines)}"
         )
 
+    OUT_FILE.parent.mkdir(parents=True, exist_ok=True)
     try:
         Path(OUT_FILE).write_text("\n".join(memh_lines) + "\n", encoding="utf-8")
     except OSError as exc:

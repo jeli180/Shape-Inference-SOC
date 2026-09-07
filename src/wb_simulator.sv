@@ -1,7 +1,7 @@
 `default_nettype none
 
 module wb_simulator #(
-    parameter MEM_FILE = "instruction_memory.memh",
+    parameter MEM_FILE = "memh/instruction_memory.memh",
     parameter int DEPTH = 1024,
     parameter int LATENCY = 3
 )(

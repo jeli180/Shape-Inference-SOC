@@ -193,7 +193,7 @@ module mshr (
   end
 
   wb_simulator #(
-    .MEM_FILE("data.memh"),
+    .MEM_FILE("memh/data.memh"),
     .DEPTH(2048),
     .LATENCY(3)
   ) dcache_wb (
