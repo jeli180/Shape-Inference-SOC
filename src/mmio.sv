@@ -44,7 +44,7 @@ module mmio (
   /*
     addr map
     - 0 not used 
-    - dpu: 4 -> 8
+    - uart: 4 -> 8
     - dcache: 12 -> 2060
     - tensor_controller: 58768 = h0 -> 58780 = hC 
   */
