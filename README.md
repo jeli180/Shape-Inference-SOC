@@ -1,5 +1,9 @@
 # Shape Inference SoC
 
+Demo: https://youtu.be/HX0pgMV8iDg
+
+FPGA: https://www.crowdsupply.com/radiona/ulx3s
+
 An FPGA SoC that accepts four hand-drawn shapes over UART, classifies them with
 an integer MLP accelerator, and returns a class for each quadrant. The current
 top level targets the ECP5-85K ULX3S board and runs the complete CPU, cache,
